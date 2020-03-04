@@ -2,212 +2,90 @@ import java.io.File;
 import java.io.FileNotFoundException;
 import java.util.Scanner;
 import java.util.TreeSet;
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Comparator;
 
-/**
- * Synonymous to a Linked List Node class. Contains information such as
- * base, limit, pid, as well as references to the next and previous MemoryBlock.
- */
-class MemoryBlock {
-
-    public int pid;
-    public int base;
-    public int limit;
-    MemoryBlock next;
-    MemoryBlock prev;
-
-    public MemoryBlock(int pid, int limit) {
-        this.pid = pid;
-        this.limit = limit;
-    }
-
-    public String toString() {
-        return String.format("Pid: %d | Base: %d | Limit: %d\n", this.pid, this.base, this.limit);
+class MemoryManagerFactory {
+    public SimpleMemoryManager getMemoryManager(int mode, int totalSize) {
+        switch(mode) {
+            case 1:
+                return new FirstFitMemoryManager(totalSize);
+            case 2:
+                return new BestFitMemoryManager(totalSize);
+            default:
+                return new WorstFitMemoryManager(totalSize);
+        }
     }
 }
 
 /**
- * Sorts MemoryBlocks by their limit in increasing order.
+ * Abstract class that will be extended by the
+ * FirstFitMemoryManager, BestFitMemoryManager or WorstFitMemoryManager.
  */
-class SortByLimit implements Comparator<MemoryBlock> {
-    public int compare(MemoryBlock block1, MemoryBlock block2) {
-        return block1.limit - block2.limit;
-    }
-}
-
-/**
- * Sorts MemoryBlocks by their base in increasing order.
- */
-class SortByBase implements Comparator<MemoryBlock> {
-    public int compare(MemoryBlock block1, MemoryBlock block2) {
-        return block1.base - block2.base;
-    }
-}
-
-/**
- * Simple Memory Manager uses HashMap manage the allocation and deallocation of 
- * 'Process Blocks'. An ArrayList is used to manage 'Hole Blocks'. The order of
- * Hole Blocks and Process Blocks are maintained by using a doubly 
- * LinkedList data structure, where the head is the first MemoryBlock to be allocated.
- */
-class SimpleMemoryManager {
-
+abstract class SimpleMemoryManager {
     public int totalSize;
     public int occupiedSize;
     public MemoryBlock head;
 
     public Map<Integer, MemoryBlock> processBlocksMap;
-    public TreeSet<MemoryBlock> increasingLimitSortedHoleBlocks;
-    public TreeSet<MemoryBlock> decreasingLimitSortedHoleBlocks;
+    public TreeSet<MemoryBlock> limitSortedHoleBlocks;
     public TreeSet<MemoryBlock> baseSortedHoleBlocks;
 
-    public ArrayList<MemoryBlock> holeBlocksList = new ArrayList<MemoryBlock>();
-
     public SimpleMemoryManager(int totalSize) {
+        //add the empty block to the head of the linked list
         MemoryBlock newBlock = new MemoryBlock(-1, totalSize);
         merge(null, newBlock);
 
         processBlocksMap = new HashMap<Integer, MemoryBlock>();
-
-        increasingLimitSortedHoleBlocks = new TreeSet<MemoryBlock>(new SortByLimit());
-        decreasingLimitSortedHoleBlocks = new TreeSet<MemoryBlock>(new SortByLimit().reversed());
+        limitSortedHoleBlocks = new TreeSet<MemoryBlock>(new SortByLimit());
         baseSortedHoleBlocks = new TreeSet<MemoryBlock>(new SortByBase());
 
-        increasingLimitSortedHoleBlocks.add(newBlock);
-        decreasingLimitSortedHoleBlocks.add(newBlock);
-        baseSortedHoleBlocks.add(newBlock);
+        //add the empty block to all TreeSets
+        addHoleBlock(newBlock);
         
         this.totalSize = totalSize;
         occupiedSize = 0;
     }
+    
+    /**
+     * Fits an algorithm using FirstFit, BestFit or WorstFit depending on the instantiated class.
+     */
+    abstract boolean fitAlgorithm(MemoryBlock newBlock);
 
     /**
-     * Runs an allocation algorithm based on the mode argument. If allocation fails,
+     * If there is enough space to allocate but allocation fails, 
      * compaction is performed and allocation will be reattempted.
      * @param mode
      * @param pid
      * @param limit
      */
-    public void manageAllocation(int mode, int pid, int limit) {
-        if(!chooseAlgorithm(mode, pid, limit)) {
-            this.compaction();
-            if(!chooseAlgorithm(mode, pid, limit)) {
-                System.out.println("Not enough space to allocate pid: " + pid);
-            }
-        }
-    }
-
-    /**
-     * Chooses the correct allocation algorithm depending on the mode.
-     * mode 1 = first fit, mode 2 = best fit, mode 3 = worst fit.
-     * @param mode
-     * @param pid
-     * @param limit
-     * @return
-     */
-    private boolean chooseAlgorithm(int mode, int pid, int limit) {
+    public void manageAllocation(int pid, int limit) {
         MemoryBlock newBlock = new MemoryBlock(pid, limit);
-        boolean allocated = false;
-        switch(mode) {
-            case 1:
-                allocated = firstFit(newBlock);
-                break;
-            case 2:
-                allocated = bestFit(newBlock);
-                break;
-            case 3:
-                allocated = worstFit(newBlock);
-                break;
-        }
-        return allocated;
-    }
-
-    /**
-     * A Process Block will be allocated into the first available Hole Block sorted 
-     * by base.
-     */
-    private boolean firstFit(MemoryBlock newBlock) {
         if(newBlock.limit + occupiedSize <= totalSize) {
-            Iterator<MemoryBlock> iterator = baseSortedHoleBlocks.iterator();
-            while(iterator.hasNext()) {
-                MemoryBlock holeBlock = iterator.next();
-                if(newBlock.limit <= holeBlock.limit) {
-                    allocate(newBlock, holeBlock);
-                    return true;
-                }
+            if(!fitAlgorithm(newBlock)) {
+                compaction();
+                fitAlgorithm(newBlock);
             }
+        } else {
+            System.out.println("Not enough space to allocate pid: " + newBlock.pid);
         }
-        return false;
     }
 
     /**
-     * A Process Block will be allocated into the first available Hole Block sorted 
-     * by limit.
-     * @param pid
-     * @param limit
-     * @return
+     * Allocates a Process Block. Two general cases:
+     * 1. Process Block is equal in size to the Hole Block and pid only needs to be changed.
+     * 2. Process Block is smaller than the Hole Block, and is integrated with the Hole Block.
      */
-    private boolean bestFit(MemoryBlock newBlock) {
-        MemoryBlock holeBlock = increasingLimitSortedHoleBlocks.ceiling(newBlock);
-        if(holeBlock != null && (newBlock.limit + occupiedSize <= totalSize)) {
-            allocate(newBlock, holeBlock);
-            return true;
-        } 
-        return false;
-    }
-
-    /**
-     * A Process Block will be allocated into the first available Hole Block sorted 
-     * in reverse order by limit.
-     * @param pid
-     * @param limit
-     * @return
-     */
-    private boolean worstFit(MemoryBlock newBlock) {
-        MemoryBlock holeBlock = increasingLimitSortedHoleBlocks.last();
-        if(holeBlock != null && (newBlock.limit + occupiedSize <= totalSize)) {
-            allocate(newBlock, holeBlock);
-            return true;
-        }
-        return false;
-    }
-
-    private void removeHoleBlock(MemoryBlock holeBlock) {
-        this.increasingLimitSortedHoleBlocks.remove(holeBlock);
-        this.decreasingLimitSortedHoleBlocks.remove(holeBlock);
-        this.baseSortedHoleBlocks.remove(holeBlock);
-    }
-
-    private void addHoleBlock(MemoryBlock holeBlock) {
-        this.baseSortedHoleBlocks.add(holeBlock);
-        this.increasingLimitSortedHoleBlocks.add(holeBlock);
-        this.decreasingLimitSortedHoleBlocks.add(holeBlock);
-    }
-
-    private void clearMemoryBlocks() {
-        this.processBlocksMap.clear();
-        this.baseSortedHoleBlocks.clear();
-        this.increasingLimitSortedHoleBlocks.clear();
-        this.decreasingLimitSortedHoleBlocks.clear();
-    }
-
-    /**
-     * Returns true if the new Process Block has been allocated, false otherwise.
-     * Allocates a Process Block if there is enough space to do so. Two cases:
-     * Process Block is equal in size to the Hole Block and pid only needs to be changed.
-     * Process Block is smaller than the Hole Block, and is integrated with the Hole Block.
-     */
-    private void allocate(MemoryBlock newBlock, MemoryBlock holeBlock) {
+    public void allocate(MemoryBlock newBlock, MemoryBlock holeBlock) {
+        removeHoleBlock(holeBlock);
         if(newBlock.limit == holeBlock.limit) {
-            removeHoleBlock(holeBlock);
             holeBlock.pid = newBlock.pid;
             newBlock = holeBlock;
         } else {
-            merge(holeBlock, newBlock);
+            holeBlock = merge(holeBlock, newBlock);
+            addHoleBlock(holeBlock);
         }
 
         // System.out.println("allocating: " + newBlock.pid + ": " + newBlock.limit + "\n");
@@ -220,21 +98,21 @@ class SimpleMemoryManager {
      * The newBlock (process) is inserted before the oldBlock (hole) and bases of
      * both blocks are updated.
      */
-    private void merge(MemoryBlock oldBlock, MemoryBlock newBlock) {
-        if(this.head == null) {
-            this.head = newBlock;
+    public MemoryBlock merge(MemoryBlock oldBlock, MemoryBlock newBlock) {
+        if(head == null) {
+            head = newBlock;
             newBlock.base = 0;
-            return;
+            return oldBlock;
         }
 
-        if(this.head == oldBlock) {
-            this.head = newBlock;
+        if(head == oldBlock) {
+            head = newBlock;
             newBlock.next = oldBlock;
             oldBlock.prev = newBlock;
 
             oldBlock.limit = oldBlock.limit - newBlock.limit;
             oldBlock.base = oldBlock.prev.base + oldBlock.prev.limit;
-            return;
+            return oldBlock;
         }
 
         newBlock.next = oldBlock;
@@ -247,6 +125,7 @@ class SimpleMemoryManager {
 
         oldBlock.limit = oldBlock.limit - newBlock.limit;
         oldBlock.base = oldBlock.prev.base + oldBlock.prev.limit;
+        return oldBlock;
     }
 
     /**
@@ -281,9 +160,7 @@ class SimpleMemoryManager {
                 block.base = block.prev.base + block.prev.limit;
             }
             
-            this.baseSortedHoleBlocks.add(block);
-            this.increasingLimitSortedHoleBlocks.add(block);
-            this.decreasingLimitSortedHoleBlocks.add(block);
+            addHoleBlock(block);
         }
     }
 
@@ -292,10 +169,10 @@ class SimpleMemoryManager {
      * references of the MemoryBlocks within the Linked List. Returns the
      * limit of the removed MemoryBlock.
      */
-    private int delete(MemoryBlock block) {
-        if(this.head == block) {
-            this.head = block.next;
-            this.head.prev = null;
+    public int delete(MemoryBlock block) {
+        if(head == block) {
+            head = block.next;
+            head.prev = null;
             return block.limit;
         }
         
@@ -308,45 +185,44 @@ class SimpleMemoryManager {
     }
 
     /**
-     * Creates a new HashMap of Process Blocks, ArrayList of HoleBlocks and
-     * Linked List of Memory Blocks. Process Blocks are compacted, and HoleBlocks
-     * are consolidated into a single large Hole Block that is added to the end of
-     * the Linked List.
+     * Creates a new HashMap of Process Blocks, and TreeSets of Hole Blocks. 
+     * Process Blocks are compacted, and HoleBlocks are consolidated into a 
+     * single large Hole Block that is added to the end of the Linked List.
      */
-    private void compaction() {
+    public void compaction() {
         // System.out.println("compacting\n");
-        this.clearMemoryBlocks();
+        clearMemoryBlocks();
         
         int pooledLimit = 0;
         MemoryBlock cur = this.head;
-        this.head = null;
+        head = null;
         
         while(cur != null) {
             if(cur.pid == -1) {
                 pooledLimit += cur.limit;
             } else {
-                MemoryBlock tailBlock = this.addToTail(cur.pid, cur.limit);
-                this.processBlocksMap.put(tailBlock.pid, tailBlock);
+                MemoryBlock tailBlock = addToTail(cur.pid, cur.limit);
+                processBlocksMap.put(tailBlock.pid, tailBlock);
             }
             cur = cur.next;
         }
 
-        MemoryBlock pooledHoleBlock = this.addToTail(-1, pooledLimit);
+        MemoryBlock pooledHoleBlock = addToTail(-1, pooledLimit);
         this.addHoleBlock(pooledHoleBlock);
     }
 
     /**
      * Adds a MemoryBlock to the end of the Linked List.
      */
-    private MemoryBlock addToTail(int pid, int limit) {
+    public MemoryBlock addToTail(int pid, int limit) {
         MemoryBlock newBlock = new MemoryBlock(pid, limit);
-        if(this.head == null) {
-            this.head = newBlock;
+        if(head == null) {
+            head = newBlock;
             newBlock.base = 0;
             return newBlock;
         }
 
-        MemoryBlock curr = this.head;
+        MemoryBlock curr = head;
         while(curr.next != null) {
             curr = curr.next;
         }
@@ -357,14 +233,166 @@ class SimpleMemoryManager {
         return newBlock;
     }
 
+    /**
+     * Prints the state of the MemoryManager by traversing through 
+     * the LinkedList starting at head.
+     */
     public String toString() {
         StringBuilder string = new StringBuilder();
-        MemoryBlock cur = this.head;
+        MemoryBlock cur = head;
         while(cur != null) {
             string.append(cur.toString());
             cur = cur.next;
         }
         return string.toString();
+    }
+
+    /**
+     * Removes a holeBlock from both TreeSets.
+     * @param holeBlock
+     */
+    public void removeHoleBlock(MemoryBlock holeBlock) {
+        this.baseSortedHoleBlocks.remove(holeBlock);
+        this.limitSortedHoleBlocks.remove(holeBlock);
+    }
+
+    /**
+     * Adds a holeBlock to both TreeSets.
+     * @param holeBlock
+     */
+    public void addHoleBlock(MemoryBlock holeBlock) {
+        this.baseSortedHoleBlocks.add(holeBlock);
+        this.limitSortedHoleBlocks.add(holeBlock);
+    }
+
+    /**
+     * Clears all HashSets and TreeSets of their MemoryBlocks.
+     */
+    public void clearMemoryBlocks() {
+        this.processBlocksMap.clear();
+        this.baseSortedHoleBlocks.clear();
+        this.limitSortedHoleBlocks.clear();
+    }
+
+}
+
+/**
+ * Synonymous to a Linked List Node class. Contains
+ * base, limit, pid information, as well as references to the next and previous MemoryBlocks.
+ */
+class MemoryBlock {
+
+    public int pid;
+    public int base;
+    public int limit;
+    MemoryBlock next;
+    MemoryBlock prev;
+
+    public MemoryBlock(int pid, int limit) {
+        this.pid = pid;
+        this.limit = limit;
+    }
+
+    public String toString() {
+        return String.format("Pid: %d | Base: %d | Limit: %d\n", this.pid, this.base, this.limit);
+    }
+}
+
+/**
+ * Sorts MemoryBlocks by their limit in increasing order. If there is no difference
+ * in limit, sorts MemoryBlocks by their base in increasing order.
+ */
+class SortByLimit implements Comparator<MemoryBlock> {
+    public int compare(MemoryBlock block1, MemoryBlock block2) {
+        int limitDifference = block1.limit - block2.limit;
+        return (limitDifference == 0) ? block1.base - block2.base : limitDifference;
+    }
+}
+
+/**
+ * Sorts MemoryBlocks by their base in increasing order.
+ */
+class SortByBase implements Comparator<MemoryBlock> {
+    public int compare(MemoryBlock block1, MemoryBlock block2) {
+        return block1.base - block2.base;
+    }
+}
+
+/**
+ * Uses the FirstFit algorithm to allocate MemoryBlocks.
+ */
+class FirstFitMemoryManager extends SimpleMemoryManager {
+
+    public FirstFitMemoryManager(int totalSize) {
+        super(totalSize);
+    }
+
+    /**
+     * A Process Block will be allocated into the first available Hole Block sorted 
+     * by base.
+     */
+    public boolean fitAlgorithm(MemoryBlock newBlock) {
+        Iterator<MemoryBlock> iterator = baseSortedHoleBlocks.iterator();
+        while(iterator.hasNext()) {
+            MemoryBlock holeBlock = iterator.next();
+            if(newBlock.limit <= holeBlock.limit) {
+                super.allocate(newBlock, holeBlock);
+                return true;
+            }
+        }
+        return false;
+    }
+}
+
+/**
+ * Uses the BestFit algorithm to allocate MemoryBlocks.
+ */
+class BestFitMemoryManager extends SimpleMemoryManager {
+
+    public BestFitMemoryManager(int totalSize) {
+        super(totalSize);
+    }  
+
+    /**
+     * A Process Block will be allocated into the first available Hole Block sorted 
+     * by limit.
+     * @param pid
+     * @param limit
+     * @return
+     */
+    public boolean fitAlgorithm(MemoryBlock newBlock) {
+        MemoryBlock holeBlock = limitSortedHoleBlocks.ceiling(newBlock);
+        if(holeBlock != null && (newBlock.limit <= holeBlock.limit)) {
+            super.allocate(newBlock, holeBlock);
+            return true;
+        } 
+        return false;
+    }
+}
+
+/**
+ * Uses the WorstFit algorithm to allocate MemoryBlocks.
+ */
+class WorstFitMemoryManager extends SimpleMemoryManager {
+
+    public WorstFitMemoryManager(int totalSize) {
+        super(totalSize);
+    } 
+
+    /**
+     * A Process Block will be allocated into the first available Hole Block sorted 
+     * in reverse order by limit.
+     * @param pid
+     * @param limit
+     * @return
+     */
+    public boolean fitAlgorithm(MemoryBlock newBlock) {
+        MemoryBlock holeBlock = limitSortedHoleBlocks.last();
+        if(holeBlock != null && (newBlock.limit <= holeBlock.limit)) {
+            allocate(newBlock, holeBlock);
+            return true;
+        }
+        return false;
     }
 }
 
@@ -379,9 +407,10 @@ public class Main {
             Scanner s = new Scanner(new File(args[0]));
             int mode = Integer.parseInt(s.nextLine());
             int totalMemorySize = Integer.parseInt(s.nextLine());
-            SimpleMemoryManager smm = new SimpleMemoryManager(totalMemorySize);
+            MemoryManagerFactory mmFactory = new MemoryManagerFactory();
+            SimpleMemoryManager smm = mmFactory.getMemoryManager(mode, totalMemorySize);
 
-            String line[];
+            String[] line = new String[3];
             int pid;
             int limit;
 
@@ -395,11 +424,10 @@ public class Main {
                         pid = Integer.parseInt(line[1]);
                         smm.deallocate(pid);
                         break;
-                    case 3:
+                    default:
                         pid = Integer.parseInt(line[1].trim());
                         limit = Integer.parseInt(line[2].trim());
-                        smm.manageAllocation(mode, pid, limit);
-                        break;
+                        smm.manageAllocation(pid, limit);
                 }
             }
             s.close();
